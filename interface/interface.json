@@ -1,0 +1,12 @@
+{
+  "id": "my-interface",
+  "name": "My interface",
+  "version": "0.1.0",
+  "description": "Calls on the air, the latest recorded calls, and live audio.",
+  "api": 1,
+  "access": "listen",
+  "license": "MIT",
+  "screenshots": [
+    { "path": "screenshots/main.png", "caption": "Calls on the air, and the latest recorded" }
+  ]
+}
