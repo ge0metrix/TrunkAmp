@@ -1,7 +1,7 @@
 {
   "id": "trunkamp",
   "name": "Trunkamp",
-  "version": "1.0.0",
+  "version": "1.0.2",
   "description": "A Winamp-style player: live audio and recorded calls, with an equalizer.",
   "api": 1,
   "access": "listen",
