@@ -1,0 +1,15 @@
+{
+  "id": "trunkamp",
+  "name": "Trunkamp",
+  "version": "1.0.0",
+  "description": "A Winamp-style player: live audio and recorded calls, with an equalizer.",
+  "api": 1,
+  "access": "listen",
+  "license": "MIT",
+  "homepage": "https://github.com/ge0metrix/TrunkAmp",
+  "repository": "https://github.com/ge0metrix/TrunkAmp",
+  "screenshots": [
+    { "path": "screenshots/player.png", "caption": "The player, with the playlist" },
+    { "path": "screenshots/phone.png", "caption": "At phone width" }
+  ]
+}
