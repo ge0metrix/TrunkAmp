@@ -1,32 +1,1452 @@
 <!doctype html>
+<!--
+  Trunkamp — a Winamp-style player for Trunk Recorder Pro, in one file.
+
+  Live audio is the "stream" pinned at the top of the playlist; the recorded
+  calls follow it, oldest first, so Next walks forward in time. HOLD locks
+  live audio to one talkgroup; AUTO plays each new recording as it arrives
+  once the playlist has played out.
+
+  Serve it from the recorder:   trunk-pro --ui ./Interface   →  http://localhost:8080/
+  From elsewhere: ?server=host:port, with the page's origin in server.allowedOrigins.
+
+  Keys: Z X C V B  prev / play / pause / stop / next   ←→ seek   ↑↓ volume
+        L open talkgroup   S hold   R auto   J filter   Alt+3 info
+        Alt+G equalizer   Alt+E playlist   Ctrl+D double size
+-->
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="color-scheme" content="light dark">
-<title>My interface</title>
-<link rel="stylesheet" href="./style.css">
-<script type="module" src="./app.js"></script>
+<title>Trunkamp</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; background: #101320; }
+  body { overflow: auto; user-select: none; -webkit-user-select: none; font: 9px Arial, Helvetica, sans-serif; color: #c8c8dc; }
+  #desk { position: relative; }
+  canvas { display: block; image-rendering: pixelated; }
+  .abs { position: absolute; }
+
+  .win { position: absolute; width: 275px; overflow: hidden; background: linear-gradient(#36364c, #23232f 60%, #1d1d28);
+         box-shadow: inset 1px 1px #62627c, inset -1px -1px #0b0b12, 0 0 0 1px #000; }
+  .win.shade { height: 14px !important; }
+  .win.shade > :not(.title) { display: none; }
+  .title { --g1: #5c5c74; --g2: #15151e; position: absolute; left: 1px; right: 1px; top: 1px; height: 12px;
+           display: flex; align-items: center; justify-content: center;
+           background: repeating-linear-gradient(var(--g1) 0 1px, var(--g2) 1px 2px) 3px 3px / calc(100% - 6px) 6px no-repeat; }
+  .win.active .title { --g1: #c2a453; --g2: #3a2e12; }
+  .cap { background: #35354b; padding: 1px 4px; }
+
+  .btn { position: absolute; display: flex; gap: 3px; align-items: center; justify-content: center; padding: 0; border: 0;
+         color: #cfcfe2; background: linear-gradient(#5a5a72, #34344a); cursor: default;
+         box-shadow: inset 1px 1px #8a8aa6, inset -1px -1px #14141c, 0 0 0 1px #000; }
+  .btn:active { background: linear-gradient(#26263a, #3a3a50); box-shadow: inset 1px 1px #0d0d14, inset -1px -1px #55556c, 0 0 0 1px #000; }
+  .btn:active > * { transform: translate(1px, 1px); }
+  .btn svg { fill: currentColor; shape-rendering: crispEdges; }
+  .tb { top: 2px; width: 9px; height: 9px; }
+  .led { width: 4px; height: 3px; background: #1d301d; box-shadow: inset 0 0 0 1px #0a120a; }
+  .on > .led { background: #4f4; box-shadow: 0 0 3px #4f4; }
+
+  .lcd { position: absolute; background: #000; box-shadow: inset 1px 1px #000, 1px 1px #55556e; }
+
+  .sl { position: absolute; }
+  .sl .thumb { position: absolute; width: var(--tw); height: var(--th); background: linear-gradient(#8c8ca6, #4a4a60);
+               box-shadow: inset 1px 1px #c0c0d4, inset -1px -1px #1a1a24, 0 0 0 1px #000; }
+  .sl.h { background: var(--track, #0c0c12); box-shadow: inset 1px 1px #000, 1px 1px #55556e; }
+  .sl.h .thumb { top: calc(50% - var(--th) / 2); left: calc((100% - var(--tw)) * var(--p, 0)); }
+  .sl.v::before { content: ""; position: absolute; left: 5px; width: 4px; top: 0; bottom: 0; background: var(--track, #123);
+                  box-shadow: inset 1px 1px #000, 1px 1px #55556e; }
+  .sl.v .thumb { left: calc(50% - var(--tw) / 2); top: calc((100% - var(--th)) * (1 - var(--p, 0))); }
+  .sl.off .thumb { display: none; }
+
+  .list { position: absolute; left: 10px; right: 10px; top: 18px; bottom: 30px; background: #000; overflow-y: auto; overflow-x: hidden;
+          scrollbar-width: thin; scrollbar-color: #6a6a86 #0c0c12; box-shadow: inset 1px 1px #000, 1px 1px #55556e; }
+  .row { display: flex; height: 13px; line-height: 13px; padding: 0 3px; color: #00e000; white-space: nowrap; }
+  .row .n { padding-right: 3px; }
+  .row .t { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+  .row .d { padding-left: 6px; }
+  .row.live .t { font-weight: bold; }
+  .row.enc { color: #3f8a3f; }
+  .row.gone { color: #2f5a2f; }
+  .row.em { color: #ff4848; }
+  .row.cur { color: #fff; }
+  .row.cur.em { color: #ffc4c4; }
+  .row.sel { background: #0000c6; }
+  input.field { position: absolute; height: 14px; background: #000; color: #00e000; border: 0; outline: none; padding: 0 3px;
+                font: 9px Arial, sans-serif; user-select: text; box-shadow: inset 1px 1px #000, 1px 1px #55556e; }
+  input.field::placeholder { color: #2e6a2e; }
+  .grip { position: absolute; right: 2px; bottom: 2px; width: 9px; height: 9px; cursor: ns-resize;
+          background: repeating-linear-gradient(135deg, transparent 0 2px, #6a6a86 2px 3px); }
+
+  .menu { position: absolute; z-index: 1000; min-width: 130px; padding: 2px; background: #2a2a3a;
+          box-shadow: inset 1px 1px #62627c, inset -1px -1px #0b0b12, 0 0 0 1px #000, 2px 2px 6px #0008; }
+  .menu div { position: relative; padding: 2px 12px 2px 14px; white-space: nowrap; }
+  .menu div:hover:not(.dis):not(.sep) { background: #0000c6; color: #fff; }
+  .menu .chk::before { content: "✓"; position: absolute; left: 4px; }
+  .menu .dis { color: #66667a; }
+  .menu .sep { height: 2px; padding: 0; margin: 2px 0; background: #14141c; border-bottom: 1px solid #4a4a62; }
+
+  .dlg { z-index: 900; width: 262px; padding: 16px 6px 6px; }
+  .dlg .body { background: #000; color: #00e000; padding: 4px; max-height: 210px; overflow: auto; white-space: pre-wrap;
+               font: 9px/12px Arial, sans-serif; user-select: text; -webkit-user-select: text; box-shadow: 1px 1px #55556e; }
+  .dlg .pick { position: relative; height: 170px; left: 0; right: 0; top: 0; bottom: 0; margin-top: 4px; }
+  .dlg input.field { position: relative; width: 100%; }
+</style>
 </head>
 <body>
-<header>
-  <h1>My interface</h1>
-  <span id="state" class="state">Connecting…</span>
-  <button id="live" type="button" aria-pressed="false">Listen live</button>
-</header>
+<div id="desk">
 
-<main>
-  <section>
-    <h2>On the air</h2>
-    <ul id="air" class="calls"></ul>
-  </section>
+<div class="win" id="main" style="height:116px">
+  <div class="title"><span class="cap"></span>
+    <button class="btn tb" data-act="shade" style="right:13px" title="Shade (double-click the title bar)" data-icon="shade"></button>
+    <button class="btn tb" data-act="close" style="right:3px" title="Stop" data-icon="close"></button></div>
+  <canvas id="clutter" class="abs" width="8" height="43" style="left:10px;top:22px" title="O options · A about · I call info · D double size · V visualizer"></canvas>
+  <div class="lcd" style="left:20px;top:20px;width:84px;height:44px"></div>
+  <canvas id="lcd" class="abs" width="76" height="40" style="left:24px;top:22px" title="Time: elapsed / remaining · visualizer: spectrum / oscilloscope / off"></canvas>
+  <div class="lcd" style="left:108px;top:20px;width:158px;height:32px"></div>
+  <canvas id="marquee" class="abs" width="152" height="9" style="left:111px;top:24px"></canvas>
+  <canvas id="info" class="abs" width="152" height="7" style="left:111px;top:41px"></canvas>
+  <div class="sl h" id="vol" style="left:107px;top:57px;width:68px;height:13px;--tw:14px;--th:11px" title="Volume (↑ ↓)"></div>
+  <div class="sl h" id="bal" style="left:177px;top:57px;width:38px;height:13px;--tw:14px;--th:11px" title="Balance (double-click: center)"></div>
+  <button class="btn" id="b-eq" data-label="EQ" style="left:219px;top:58px;width:23px;height:12px" title="Equalizer (Alt+G)"><i class="led"></i></button>
+  <button class="btn" id="b-pl" data-label="PL" style="left:243px;top:58px;width:23px;height:12px" title="Playlist (Alt+E)"><i class="led"></i></button>
+  <div class="sl h off" id="seek" style="left:16px;top:73px;width:248px;height:10px;--tw:29px;--th:10px" title="Seek (← →)"></div>
+  <button class="btn" id="b-prev" style="left:16px;top:88px;width:23px;height:18px" data-icon="prev" title="Previous (Z) · live: replay the call just heard"></button>
+  <button class="btn" id="b-play" style="left:39px;top:88px;width:23px;height:18px" data-icon="play" title="Play (X)"></button>
+  <button class="btn" id="b-pause" style="left:62px;top:88px;width:23px;height:18px" data-icon="pause" title="Pause (C)"></button>
+  <button class="btn" id="b-stop" style="left:85px;top:88px;width:23px;height:18px" data-icon="stop" title="Stop (V)"></button>
+  <button class="btn" id="b-next" style="left:108px;top:88px;width:22px;height:18px" data-icon="next" title="Next (B) · live: skip this call"></button>
+  <button class="btn" id="b-eject" style="left:136px;top:89px;width:22px;height:16px" data-icon="eject" title="Open talkgroup (L)"></button>
+  <button class="btn" id="b-hold" data-label="HOLD" style="left:164px;top:89px;width:44px;height:15px" title="Hold live audio on this talkgroup (S)"><i class="led"></i></button>
+  <button class="btn" id="b-auto" data-label="AUTO" style="left:210px;top:89px;width:44px;height:15px" title="Play new recordings as they arrive (R)"><i class="led"></i></button>
+</div>
 
-  <section>
-    <h2>Recorded</h2>
-    <ul id="recorded" class="calls"></ul>
-  </section>
-</main>
+<div class="win" id="eq" style="height:116px">
+  <div class="title"><span class="cap"></span>
+    <button class="btn tb" data-act="shade" style="right:13px" data-icon="shade"></button>
+    <button class="btn tb" data-act="close" style="right:3px" data-icon="close"></button></div>
+  <button class="btn" id="eq-on" data-label="ON" style="left:14px;top:18px;width:26px;height:12px" title="Equalizer on / off"><i class="led"></i></button>
+  <div class="lcd" style="left:86px;top:17px;width:113px;height:19px"></div>
+  <canvas id="eq-graph" class="abs" width="113" height="19" style="left:86px;top:17px"></canvas>
+  <button class="btn" id="eq-presets" data-label="PRESETS" style="left:217px;top:18px;width:44px;height:12px"></button>
+</div>
 
-<audio id="player" preload="none"></audio>
+<div class="win" id="pl">
+  <div class="title"><span class="cap"></span>
+    <button class="btn tb" data-act="shade" style="right:13px" data-icon="shade"></button>
+    <button class="btn tb" data-act="close" style="right:3px" data-icon="close"></button></div>
+  <div class="list" id="list"></div>
+  <button class="btn" id="pl-add" data-label="ADD" style="left:12px;bottom:10px;width:26px;height:15px" title="Open talkgroup (L)"></button>
+  <button class="btn" id="pl-rem" data-label="REM" style="left:41px;bottom:10px;width:26px;height:15px"></button>
+  <button class="btn" id="pl-sel" data-label="SEL" style="left:70px;bottom:10px;width:26px;height:15px"></button>
+  <button class="btn" id="pl-misc" data-label="MISC" style="left:99px;bottom:10px;width:28px;height:15px"></button>
+  <input class="field" id="filter" placeholder="FILTER (J)" spellcheck="false" style="left:132px;bottom:10px;width:76px">
+  <canvas id="pl-total" class="abs" width="52" height="5" style="right:16px;bottom:15px"></canvas>
+  <div class="grip" id="grip"></div>
+</div>
+
+</div>
+
+<script type="module">
+// ── connection ───────────────────────────────────────────────────────────────
+
+const params = new URLSearchParams(location.search);
+const server = params.get("server");
+const base = server ? `${location.protocol === "https:" ? "https" : "http"}://${server}` : "";
+const { TrunkClient, conventionalIndex, duration, mhz } = await import(`${base}/api/client.js`);
+const rec = new TrunkClient({ server: server ?? undefined, historyLimit: 1000 });
+
+const $ = (id) => document.getElementById(id);
+const desk = $("desk");
+const LCD = "#00e000", DIM = "#0d3a0d", RED = "#ff4040", GREY = "#6a6a84";
+
+// ── settings ─────────────────────────────────────────────────────────────────
+
+const KEY = "trunkamp";
+const DEF = {
+  scale: 2, vol: 80, bal: 0, eqOn: true, pre: 0, bands: Array(10).fill(0),
+  timeMode: "elapsed", vis: 0, emerg: true, auto: false, plH: 232,
+  win: { main: { x: 16, y: 16, open: true, shade: false }, eq: { x: 16, y: 132, open: true, shade: false }, pl: { x: 291, y: 16, open: true, shade: false } },
+};
+const P = (() => {
+  const d = structuredClone(DEF);
+  try {
+    const s = JSON.parse(localStorage.getItem(KEY));
+    if (s) return { ...d, ...s, win: { main: { ...d.win.main, ...s.win?.main }, eq: { ...d.win.eq, ...s.win?.eq }, pl: { ...d.win.pl, ...s.win?.pl } } };
+  } catch {}
+  return d;
+})();
+let saveTimer;
+const save = () => { clearTimeout(saveTimer); saveTimer = setTimeout(() => localStorage.setItem(KEY, JSON.stringify(P)), 300); };
+
+// ── pixel font (3×5) and LCD digits ─────────────────────────────────────────
+
+// Each glyph: five rows, each a 3-bit number (4 = left pixel, 2 = middle, 1 = right).
+const FONT = {
+  A: "25755", B: "65656", C: "34443", D: "65556", E: "74647", F: "74644", G: "34553", H: "55755", I: "72227", J: "11152",
+  K: "55655", L: "44447", M: "57755", N: "65555", O: "25552", P: "65644", Q: "25563", R: "65655", S: "34216", T: "72222",
+  U: "55557", V: "55552", W: "55775", X: "55255", Y: "55222", Z: "71247",
+  0: "75557", 1: "26227", 2: "61247", 3: "61216", 4: "55711", 5: "74616", 6: "34757", 7: "71222", 8: "75757", 9: "75716",
+  " ": "00000", ".": "00002", ",": "00024", ":": "02020", ";": "02024", "-": "00700", _: "00007", "/": "11244", "\\": "44211",
+  "(": "12221", ")": "42224", "[": "64446", "]": "31113", "<": "12421", ">": "42124", "*": "05250", "#": "57575", "+": "02720",
+  "!": "22202", "?": "61202", "'": "22000", '"': "55000", "&": "25253", "=": "07070", "%": "51245", "@": "75747", "|": "22222",
+};
+const fold = (s) => [...String(s).toUpperCase().normalize("NFD").replace(/[̀-ͯ]/g, "")];
+function drawText(ctx, s, x, y, color) {
+  ctx.fillStyle = color;
+  for (const ch of fold(s)) {
+    const g = FONT[ch] ?? FONT["?"];
+    for (let r = 0; r < 5; r++) {
+      const b = +g[r];
+      if (b & 4) ctx.fillRect(x, y + r, 1, 1);
+      if (b & 2) ctx.fillRect(x + 1, y + r, 1, 1);
+      if (b & 1) ctx.fillRect(x + 2, y + r, 1, 1);
+    }
+    x += 4;
+  }
+}
+const textWidth = (s) => fold(s).length * 4 - 1;
+function pix(s, color = "#d0d0e4") {
+  const c = document.createElement("canvas");
+  c.width = Math.max(1, textWidth(s));
+  c.height = 5;
+  drawText(c.getContext("2d"), s, 0, 0, color);
+  return c;
+}
+
+// Seven segments on a 9×13 cell: a b c d e f g.
+const SEGS = [[1, 0, 7, 2], [7, 1, 2, 6], [7, 6, 2, 6], [1, 11, 7, 2], [0, 6, 2, 6], [0, 1, 2, 6], [1, 5, 7, 2]];
+const DIGITS = [0x3f, 0x06, 0x5b, 0x4f, 0x66, 0x6d, 0x7d, 0x07, 0x7f, 0x6f];
+function digit(ctx, x, y, d) {
+  const mask = d == null ? 0 : DIGITS[d];
+  for (const lit of [false, true]) {
+    ctx.fillStyle = lit ? LCD : "#061d06";
+    SEGS.forEach(([sx, sy, w, h], i) => !!(mask >> i & 1) === lit && ctx.fillRect(x + sx, y + sy, w, h));
+  }
+}
+
+// ── icons and labels (static markup only) ───────────────────────────────────
+
+const ICON = {
+  prev: '<svg width="12" height="8"><rect width="2" height="8"/><path d="M7 0v8L2 4zM12 0v8L7 4z"/></svg>',
+  play: '<svg width="7" height="8"><path d="M0 0v8l7-4z"/></svg>',
+  pause: '<svg width="8" height="8"><rect width="3" height="8"/><rect x="5" width="3" height="8"/></svg>',
+  stop: '<svg width="8" height="8"><rect width="8" height="8"/></svg>',
+  next: '<svg width="12" height="8"><path d="M0 0v8l5-4zM5 0v8l5-4z"/><rect x="10" width="2" height="8"/></svg>',
+  eject: '<svg width="10" height="8"><path d="M5 0l5 5H0z"/><rect y="6" width="10" height="2"/></svg>',
+  shade: '<svg width="5" height="5"><rect y="3" width="5" height="2"/></svg>',
+  close: '<svg width="5" height="5"><path d="M0 0h1l4 4v1H4L0 1zM4 0h1v1L1 5H0V4z"/></svg>',
+};
+for (const el of document.querySelectorAll("[data-icon]")) el.innerHTML = ICON[el.dataset.icon];
+for (const el of document.querySelectorAll("[data-label]")) el.append(pix(el.dataset.label));
+
+const titles = new Map();
+function setTitle(id, text) {
+  if (titles.get(id) === text) return;
+  titles.set(id, text);
+  $(id).querySelector(".cap").replaceChildren(pix(text, "#e2e2f0"));
+}
+setTitle("main", "TRUNKAMP");
+setTitle("eq", "TRUNKAMP EQUALIZER");
+setTitle("pl", "TRUNKAMP PLAYLIST");
+
+// ── audio ────────────────────────────────────────────────────────────────────
+
+const BANDS = [70, 150, 300, 500, 800, 1200, 1600, 2200, 3000, 3600]; // the voice band: the audio is 8 kHz
+const BOOST = 2; // the vocoders' output is quiet
+const QUIET = 1.5; // s without audio that ends a live call
+
+const audio = new Audio();
+audio.preload = "auto";
+audio.crossOrigin = "anonymous";
+audio.setAttribute("playsinline", "");
+audio.setAttribute("webkit-playsinline", "");
+
+// Live chunks and recorded calls share one graph, so the EQ and visualizer
+// work on both: sources → preamp → EQ → balance → volume → analyser → out.
+// The live scheduler follows client.js's LivePlayer, plus skip and priority.
+const engine = {
+  ctx: null, an: null, liveOn: false,
+  live: { next: 0, lastAt: 0, nowPlaying: null, last: null, skipped: new Set(), prefer: null, muted: false, sources: [], timer: 0 },
+  onNow: () => {},
+
+  async resume() {
+    if (!this.ctx) {
+      const c = (this.ctx = new AudioContext());
+      this.pre = c.createGain();
+      this.eq = BANDS.map((f, i) => {
+        const b = c.createBiquadFilter();
+        b.type = i === 0 ? "lowshelf" : i === BANDS.length - 1 ? "highshelf" : "peaking";
+        b.frequency.value = f;
+        b.Q.value = 1.2;
+        return b;
+      });
+      this.pan = c.createStereoPanner();
+      this.vol = c.createGain();
+      this.an = c.createAnalyser();
+      this.an.fftSize = 1024;
+      this.an.smoothingTimeConstant = 0.55;
+      this.an.minDecibels = -95;
+      this.an.maxDecibels = -25;
+      [this.pre, ...this.eq, this.pan, this.vol, this.an, c.destination].reduce((a, b) => (a.connect(b), b));
+      this.bus = c.createGain();
+      this.bus.connect(this.pre);
+      c.createMediaElementSource(audio).connect(this.pre);
+      this.applyEq();
+      this.applyVol();
+    }
+    await this.ctx.resume();
+  },
+  applyEq() {
+    if (!this.ctx) return;
+    this.pre.gain.value = BOOST * (P.eqOn ? 10 ** (P.pre / 20) : 1);
+    this.eq.forEach((b, i) => (b.gain.value = P.eqOn ? P.bands[i] : 0));
+  },
+  applyVol() {
+    if (!this.ctx) return;
+    this.vol.gain.value = (P.vol / 100) ** 2;
+    this.pan.pan.value = P.bal / 100;
+  },
+
+  play(ch) {
+    const c = this.ctx, L = this.live;
+    if (!c || c.state !== "running" || !this.liveOn || !ch.samples.length) return;
+    const key = `${ch.system}:${ch.callId}`;
+    if (L.skipped.has(key)) return;
+    const now = c.currentTime;
+    if (L.prefer === key && L.nowPlaying?.key !== key) {
+      this.cut();
+      L.prefer = null;
+      this.setNow(ch, key);
+    } else if (!L.nowPlaying || (now - L.lastAt > QUIET && L.next <= now)) this.setNow(ch, key);
+    else if (key !== L.nowPlaying.key) return;
+    L.lastAt = now;
+    clearTimeout(L.timer);
+    if (!L.muted) {
+      const buf = c.createBuffer(1, ch.samples.length, 8000);
+      buf.getChannelData(0).set(ch.samples);
+      const src = c.createBufferSource();
+      src.buffer = buf;
+      src.connect(this.bus);
+      // Audio comes in bursts: queue after the last chunk; after a gap, start a little ahead.
+      if (L.next < now) L.next = now + 0.25;
+      src.start(L.next);
+      L.next += buf.duration;
+      L.sources.push(src);
+      src.onended = () => L.sources.splice(L.sources.indexOf(src) >>> 0, 1);
+    }
+    L.timer = setTimeout(() => this.setNow(null), (Math.max(0, L.next - now) + QUIET) * 1000);
+  },
+  /** Drop the call playing and take the next one heard. */
+  skip() {
+    const L = this.live;
+    if (!L.nowPlaying) return false;
+    L.skipped.add(L.nowPlaying.key);
+    if (L.skipped.size > 64) L.skipped.delete(L.skipped.values().next().value);
+    this.cut();
+    this.setNow(null);
+    return true;
+  },
+  cut() {
+    for (const s of this.live.sources.splice(0)) try { s.stop(); } catch {}
+    this.live.next = 0;
+  },
+  off() {
+    this.liveOn = false;
+    this.live.muted = false;
+    clearTimeout(this.live.timer);
+    this.cut();
+    this.setNow(null);
+  },
+  setNow(ch, key) {
+    const L = this.live;
+    if ((ch ? key : null) === (L.nowPlaying?.key ?? null)) return;
+    L.nowPlaying = ch ? { key, callId: ch.callId, system: ch.system, talkgroup: ch.talkgroup } : null;
+    if (L.nowPlaying) L.last = L.nowPlaying;
+    this.onNow();
+  },
+};
+
+// ── names ────────────────────────────────────────────────────────────────────
+
+function sysName(num) {
+  const k = conventionalIndex(num);
+  if (k !== null) return rec.config?.conventional?.[k]?.shortName ?? "";
+  return rec.status?.systems?.find((s) => s.index === num)?.shortName ?? "";
+}
+const tgLabel = (sys, tg) => (sys && rec.talkgroups(sys).get(tg)?.alphaTag) || `TG ${tg}`;
+const callName = (r) => r.talkgroup_tag || tgLabel(r.short_name, r.talkgroup);
+const clock = (t) => new Date(t * 1000).toLocaleTimeString([], { hourCycle: "h23" });
+const longDur = (s) => {
+  s = Math.round(s);
+  const h = Math.floor(s / 3600), m = Math.floor(s / 60) % 60, ss = String(s % 60).padStart(2, "0");
+  return h ? `${h}:${String(m).padStart(2, "0")}:${ss}` : `${m}:${ss}`;
+};
+
+let lastCV = null;
+/** The CallView of the live call playing (kept a moment after it leaves the air). */
+function liveCall() {
+  const np = engine.live.nowPlaying;
+  if (!np) return null;
+  const cv = rec.calls.find((c) => c.id === np.callId && c.system === np.system);
+  if (cv) lastCV = cv;
+  return cv ?? (lastCV?.id === np.callId && lastCV.system === np.system ? lastCV : null);
+}
+
+// ── player state ─────────────────────────────────────────────────────────────
+
+const S = {
+  src: null,      // "live" | a recorded call's path | null — kept after stop, so Play resumes it
+  entry: null,    // the CallEntry playing
+  playing: false,
+  paused: false,
+  waiting: false, // AUTO: the playlist played out; the next recording will play
+  hold: null,     // { system, talkgroup, name }: live audio of this talkgroup only
+  flash: null,
+  mq: "", mqColor: LCD,
+};
+const flash = (text, ms = 1200) => (S.flash = { text, until: performance.now() + ms });
+
+const audioKept = new Map(); // path → audio, from callFiles
+const missing = new Set();   // paths whose audio failed to load
+const playable = (e) => (audioKept.get(e.path) ?? e.audio) !== false && !missing.has(e.path) && !(e.record.encrypted && !e.record.decrypted);
+
+let listenSent = "";
+function applyListen() {
+  const on = S.playing && S.src === "live";
+  engine.liveOn = on;
+  const f = on ? (S.hold ? { system: S.hold.system || null, talkgroup: S.hold.talkgroup } : {}) : false;
+  const k = JSON.stringify(f);
+  if (k !== listenSent) {
+    listenSent = k;
+    rec.listen(f);
+  }
+}
+
+async function playKey(key) {
+  if (!key) return;
+  const e = key === "live" ? null : byPath.get(key);
+  if (key !== "live" && !e) return;
+  try { await engine.resume(); } catch {}
+  Object.assign(S, { src: key, entry: e, playing: true, paused: false, waiting: false });
+  engine.off();
+  if (e) {
+    audio.src = rec.callUrl(e);
+    audio.play().catch(() => {});
+  } else audio.pause();
+  applyListen();
+  rowEls.get(key)?.scrollIntoView({ block: "nearest" });
+  update();
+}
+
+function play() {
+  if (S.playing && S.paused) return pause();
+  const picked = sel.size === 1 ? [...sel][0] : null;
+  const key = picked && picked !== S.src ? picked : S.src ?? "live";
+  if (S.playing && key === S.src && S.entry) {
+    audio.currentTime = 0;
+    return;
+  }
+  if (S.playing && key === S.src) return;
+  playKey(key);
+}
+
+function pause() {
+  if (!S.playing || S.waiting) return;
+  S.paused = !S.paused;
+  if (S.src === "live") {
+    engine.live.muted = S.paused;
+    if (S.paused) engine.cut();
+  } else if (S.paused) audio.pause();
+  else audio.play().catch(() => {});
+  update();
+}
+
+function stop() {
+  Object.assign(S, { playing: false, paused: false, waiting: false, entry: null });
+  audio.pause();
+  engine.off();
+  applyListen();
+  update();
+}
+
+/** The next / previous playable recorded call in the playlist, from `key`. */
+function neighbor(key, dir) {
+  const keys = visible.filter((it) => it !== LIVE).map((e) => e.path);
+  let i = keys.indexOf(key);
+  if (i < 0) {
+    const t = byPath.get(key)?.record.start_time ?? 0;
+    const after = keys.findIndex((k) => byPath.get(k).record.start_time > t);
+    const pos = after < 0 ? keys.length : after;
+    i = dir > 0 ? pos - 1 : pos;
+  }
+  for (let j = i + dir; j >= 0 && j < keys.length; j += dir) if (playable(byPath.get(keys[j]))) return keys[j];
+  return null;
+}
+
+function next() {
+  if (S.src === "live") {
+    if (S.playing && engine.skip()) flash("SKIPPED");
+    return;
+  }
+  if (!S.src) return;
+  const k = neighbor(S.src, +1);
+  if (k) playKey(k);
+  else if (P.auto && S.playing) {
+    audio.pause();
+    Object.assign(S, { entry: null, paused: false, waiting: true });
+    update();
+  } else stop();
+}
+
+function prev() {
+  if (S.src === "live") {
+    const np = engine.live.nowPlaying ?? engine.live.last;
+    if (!np) return flash("NOTHING HEARD YET");
+    const sys = sysName(np.system);
+    const same = (e) => !sys || e.record.short_name === sys;
+    const e = rec.history.find((e) => e.record.call_num === np.callId && same(e)) ?? rec.history.find((e) => e.record.talkgroup === np.talkgroup && same(e));
+    return e && playable(e) ? playKey(e.path) : flash("NOT RECORDED YET");
+  }
+  const k = S.src && neighbor(S.src, -1);
+  if (k) playKey(k);
+}
+
+function seekBy(s) {
+  if (!S.entry || !isFinite(audio.duration)) return;
+  audio.currentTime = Math.max(0, Math.min(audio.duration, audio.currentTime + s));
+}
+
+function toggleHold() {
+  if (S.hold) {
+    S.hold = null;
+    flash("HOLD OFF - SCANNING ALL TALKGROUPS");
+  } else {
+    let t = null;
+    const np = engine.live.nowPlaying ?? engine.live.last;
+    if (S.src === "live" && np) {
+      const cv = liveCall() ?? (lastCV?.id === np.callId ? lastCV : null), system = cv?.systemName || sysName(np.system);
+      t = { system, talkgroup: np.talkgroup, name: cv?.alphaTag || tgLabel(system, np.talkgroup) };
+    } else if (S.entry) {
+      const r = S.entry.record;
+      t = { system: r.short_name ?? "", talkgroup: r.talkgroup, name: callName(r) };
+    }
+    if (!t) return flash("NOTHING TO HOLD - OPEN A TALKGROUP (L)", 2500);
+    S.hold = t;
+    flash(`HOLD: ${t.name}`);
+  }
+  applyListen();
+  update();
+}
+
+function toggleAuto() {
+  P.auto = !P.auto;
+  save();
+  flash(P.auto ? "AUTO: NEW RECORDINGS PLAY AS THEY ARRIVE" : "AUTO OFF", 2000);
+  if (!P.auto && S.waiting) stop();
+  update();
+}
+
+audio.addEventListener("ended", () => S.entry && next());
+audio.addEventListener("error", () => {
+  if (!S.entry || !audio.getAttribute("src")) return;
+  missing.add(S.entry.path);
+  rowEls.get(S.entry.path)?.classList.add("gone");
+  flash("AUDIO NOT AVAILABLE");
+  next();
+});
+
+rec.on("audio", (ch) => {
+  const h = S.hold;
+  if (h && (ch.talkgroup !== h.talkgroup || (h.system && sysName(ch.system) && sysName(ch.system) !== h.system))) return;
+  engine.play(ch);
+});
+engine.onNow = () => update();
+
+// ── playlist ─────────────────────────────────────────────────────────────────
+
+const LIVE = { path: "live" };
+const list = $("list"), filterEl = $("filter");
+let calls = [], visible = [LIVE], byPath = new Map(), rowEls = new Map();
+const removed = new Set(), sel = new Set();
+let anchor = null;
+
+function rebuild() {
+  calls = rec.history.slice();
+  byPath = new Map(calls.map((e) => [e.path, e]));
+  refilter();
+}
+function refilter() {
+  const q = filterEl.value.trim().toLowerCase();
+  const hit = (e) => {
+    const r = e.record;
+    return `${callName(r)} ${r.talkgroup} ${r.short_name ?? ""} ${r.talkgroup_description ?? ""} ${r.talkgroup_group ?? ""}`.toLowerCase().includes(q);
+  };
+  visible = [LIVE, ...calls.filter((e) => !removed.has(e.path) && (!q || hit(e)))];
+  renderList();
+}
+const liveLabel = () => `● LIVE: ${S.hold ? `HOLD ${S.hold.name}` : "ALL TALKGROUPS"}`;
+
+function renderList() {
+  const atBottom = list.scrollTop + list.clientHeight >= list.scrollHeight - 2;
+  const frag = document.createDocumentFragment();
+  rowEls = new Map();
+  visible.forEach((it, i) => {
+    const row = document.createElement("div");
+    const cells = ["n", "t", "d"].map((c) => Object.assign(document.createElement("span"), { className: c }));
+    cells[0].textContent = `${i + 1}.`;
+    row.className = "row";
+    if (it === LIVE) {
+      row.classList.add("live");
+      cells[1].textContent = liveLabel();
+      cells[2].textContent = "LIVE";
+    } else {
+      const r = it.record;
+      cells[1].textContent = `${clock(r.start_time)}  ${callName(r)}${r.short_name ? ` · ${r.short_name}` : ""}`;
+      cells[2].textContent = duration(r.call_length);
+      if (r.emergency) row.classList.add("em");
+      if (r.encrypted && !r.decrypted) row.classList.add("enc");
+      if (!playable(it)) row.classList.add("gone");
+    }
+    row.dataset.k = it.path;
+    row.classList.toggle("sel", sel.has(it.path));
+    row.classList.toggle("cur", it.path === S.src);
+    row.append(...cells);
+    frag.append(row);
+    rowEls.set(it.path, row);
+  });
+  list.replaceChildren(frag);
+  if (atBottom) list.scrollTop = list.scrollHeight;
+  drawTotal();
+}
+
+function paintRows() {
+  for (const [k, el] of rowEls) {
+    el.classList.toggle("sel", sel.has(k));
+    el.classList.toggle("cur", k === S.src);
+  }
+  const t = rowEls.get("live")?.querySelector(".t");
+  if (t && t.textContent !== liveLabel()) t.textContent = liveLabel();
+  drawTotal();
+}
+
+const totalCtx = $("pl-total").getContext("2d");
+let totalText = "";
+function drawTotal() {
+  const sum = (it) => it.reduce((a, e) => a + (e === LIVE ? 0 : e.record.call_length || 0), 0);
+  const text = `${longDur(sum(visible.filter((e) => sel.has(e.path))))}/${longDur(sum(visible))}`;
+  if (text === totalText) return;
+  totalText = text;
+  totalCtx.clearRect(0, 0, 52, 5);
+  drawText(totalCtx, text, 52 - textWidth(text), 0, LCD);
+}
+
+list.addEventListener("pointerdown", (e) => {
+  const row = e.target.closest(".row");
+  if (!row) return;
+  const k = row.dataset.k;
+  if (e.button === 2 && sel.has(k)) return;
+  if (e.ctrlKey || e.metaKey) sel.has(k) ? sel.delete(k) : sel.add(k);
+  else if (e.shiftKey && anchor) {
+    const keys = visible.map((it) => it.path);
+    const [a, b] = [keys.indexOf(anchor), keys.indexOf(k)].sort((x, y) => x - y);
+    sel.clear();
+    keys.slice(Math.max(0, a), b + 1).forEach((x) => sel.add(x));
+  } else {
+    sel.clear();
+    sel.add(k);
+  }
+  if (!e.shiftKey) anchor = k;
+  paintRows();
+});
+list.addEventListener("dblclick", (e) => {
+  const row = e.target.closest(".row");
+  if (row) playKey(row.dataset.k);
+});
+list.addEventListener("click", (e) => {
+  const row = e.target.closest(".row");
+  if (row && mobile) playKey(row.dataset.k); // no double-tap on phones
+});
+list.addEventListener("contextmenu", (e) => {
+  e.preventDefault();
+  const row = e.target.closest(".row");
+  if (row) rowMenu(row.dataset.k, e);
+});
+filterEl.addEventListener("input", refilter);
+
+function removeSelected() {
+  for (const k of sel) if (k !== "live") removed.add(k);
+  sel.clear();
+  refilter();
+}
+function selectAll() {
+  visible.forEach((it) => sel.add(it.path));
+  paintRows();
+}
+function download(e) {
+  const a = document.createElement("a");
+  a.href = rec.callUrl(e);
+  a.download = "";
+  a.click();
+}
+
+function rowMenu(k, ev) {
+  if (k === "live") {
+    return menu(ev, [
+      { label: "Play", action: () => playKey("live") },
+      { label: "Open talkgroup…", action: pickTalkgroup },
+      { label: "Release hold (scan all)", disabled: !S.hold, action: toggleHold },
+      "-",
+      { label: "Call info", action: () => info("live") },
+    ]);
+  }
+  const e = byPath.get(k);
+  if (!e) return;
+  const r = e.record;
+  menu(ev, [
+    { label: "Play", action: () => playKey(k) },
+    { label: "Call info", action: () => info(k) },
+    { label: "Download audio", disabled: !playable(e), action: () => download(e) },
+    "-",
+    { label: "Listen live to this talkgroup", action: () => chooseTalkgroup({ system: r.short_name ?? "", talkgroup: r.talkgroup, name: callName(r) }) },
+    { label: "Show only this talkgroup", action: () => { filterEl.value = String(r.talkgroup); refilter(); } },
+    "-",
+    { label: "Remove from playlist", action: removeSelected },
+  ]);
+}
+
+// ── menus and dialogs ────────────────────────────────────────────────────────
+
+let openMenu = null;
+const closeMenu = () => (openMenu?.remove(), (openMenu = null));
+const toDesk = (cx, cy) => [(cx + scrollX) / scale, (cy + scrollY) / scale];
+
+function menu(ev, items) {
+  closeMenu();
+  const m = document.createElement("div");
+  m.className = "menu";
+  for (const it of items) {
+    const d = document.createElement("div");
+    if (it === "-") d.className = "sep";
+    else {
+      d.textContent = it.label;
+      if (it.checked) d.classList.add("chk");
+      if (it.disabled) d.classList.add("dis");
+      else d.onclick = () => (closeMenu(), it.action());
+    }
+    m.append(d);
+  }
+  const r = ev.currentTarget instanceof Element && ev.type !== "contextmenu" ? ev.currentTarget.getBoundingClientRect() : null;
+  const [x, y] = r ? toDesk(r.left, r.bottom) : toDesk(ev.clientX, ev.clientY);
+  m.style.left = `${Math.max(0, Math.min(x, (scrollX + innerWidth) / scale - 140))}px`;
+  m.style.top = `${y}px`;
+  desk.append(m);
+  openMenu = m;
+}
+document.addEventListener("pointerdown", (e) => openMenu && !e.target.closest(".menu") && closeMenu(), true);
+
+let openDialog = null;
+const closeDialog = () => (openDialog?.remove(), (openDialog = null));
+function dialog(title, fill) {
+  closeDialog();
+  const d = document.createElement("div");
+  d.className = "win dlg active";
+  d.innerHTML = '<div class="title"><span class="cap"></span><button class="btn tb" style="right:3px">' + ICON.close + "</button></div>";
+  d.querySelector(".cap").append(pix(title, "#e2e2f0"));
+  d.querySelector(".tb").onclick = closeDialog;
+  fill(d);
+  const [x, y] = toDesk(innerWidth / 2, innerHeight / 2);
+  d.style.left = `${Math.max(0, x - 131)}px`;
+  d.style.top = `${Math.max(0, y - 110)}px`;
+  dragBy(d.querySelector(".title"), () => [parseFloat(d.style.left), parseFloat(d.style.top)], (nx, ny) => {
+    d.style.left = `${nx}px`;
+    d.style.top = `${ny}px`;
+  });
+  desk.append(d);
+  openDialog = d;
+}
+function textDialog(title, lines) {
+  dialog(title, (d) => {
+    const body = document.createElement("div");
+    body.className = "body";
+    body.textContent = lines.filter((l) => l != null && l !== false).join("\n");
+    d.append(body);
+  });
+}
+
+function info(key) {
+  key ??= S.src ?? (sel.size ? [...sel][0] : "live");
+  if (key === "live") {
+    const np = engine.live.nowPlaying ?? engine.live.last;
+    const cv = liveCall() ?? (np && lastCV?.id === np.callId ? lastCV : null);
+    if (!np) return textDialog("CALL INFO", ["Nothing heard live yet.", "", S.hold ? `Holding on ${S.hold.name} (${S.hold.talkgroup}).` : "Scanning all talkgroups."]);
+    const sys = cv?.systemName || sysName(np.system);
+    return textDialog("CALL INFO", [
+      `Talkgroup:  ${cv?.alphaTag || tgLabel(sys, np.talkgroup)} (${np.talkgroup})`,
+      `System:  ${sys || "—"}`,
+      cv && `Frequency:  ${mhz(cv.freqHz)}${cv.slot != null ? `  slot ${cv.slot}` : ""}`,
+      cv && `Audio:  ${cv.analog ? "analog" : cv.nxdn ?? "digital"}${cv.tone ? `  tone ${cv.tone}` : ""}`,
+      cv && `State:  ${cv.state}${cv.reason ? ` (${cv.reason})` : ""}`,
+      cv && `Emergency:  ${cv.emergency ? "YES" : "no"}`,
+      cv && `Encrypted:  ${cv.encrypted ? (cv.decrypted ? "yes, decrypted" : "yes") : "no"}`,
+      cv?.alsoOn?.length && `Also on:  ${cv.alsoOn.join(", ")}`,
+      cv && "",
+      cv && "Radios:",
+      ...(cv?.sources ?? []).map((u) => `  ${u}  ${rec.unitName(sys, u)}`),
+    ]);
+  }
+  const e = byPath.get(key);
+  if (!e) return;
+  const r = e.record;
+  textDialog("CALL INFO", [
+    `Talkgroup:  ${callName(r)} (${r.talkgroup})`,
+    r.talkgroup_description && `Description:  ${r.talkgroup_description}`,
+    (r.talkgroup_group || r.talkgroup_group_tag) && `Group:  ${[r.talkgroup_group, r.talkgroup_group_tag].filter(Boolean).join(" / ")}`,
+    `System:  ${r.short_name ?? "—"}`,
+    `Start:  ${new Date(r.start_time * 1000).toLocaleString()}`,
+    `Length:  ${duration(r.call_length)}`,
+    `Frequency:  ${mhz(r.freq)}`,
+    `Audio:  ${r.audio_type}${r.tdma_slot ? `  slot ${r.tdma_slot}` : ""}${r.tone_detected ? `  tone ${r.tone_detected}` : ""}`,
+    `Emergency:  ${r.emergency ? "YES" : "no"}`,
+    `Encrypted:  ${r.encrypted ? (r.decrypted ? "yes, decrypted" : "yes") : "no"}`,
+    r.signal != null && `Signal:  ${r.signal.toFixed(1)} dBFS   noise ${r.noise?.toFixed(1) ?? "—"} dBFS   SNR ${r.snr?.toFixed(1) ?? "—"} dB`,
+    r.clean_voice_pct != null && `Clean voice:  ${Math.round(r.clean_voice_pct)}%`,
+    "",
+    "Radios:",
+    ...(r.srcList ?? []).map((s) => `  +${(s.pos ?? 0).toFixed(1)}s  ${s.src}  ${s.tag || ""}${s.emergency ? "  EMERGENCY" : ""}`),
+    "",
+    `File:  ${e.path}`,
+    !playable(e) && "(its audio wasn't kept)",
+  ]);
+}
+
+function about() {
+  textDialog("ABOUT TRUNKAMP", [
+    "Trunkamp — a Winamp-style player for Trunk Recorder Pro.",
+    `Recorder: ${rec.connected ? `Trunk Recorder Pro ${rec.version ?? ""}` : "not connected"}`,
+    "",
+    "The LIVE stream is at the top of the playlist; recorded calls follow, oldest first.",
+    "HOLD keeps live audio on one talkgroup. AUTO plays new recordings as they arrive.",
+    "History reaches back as far as the recorder sends at connect (300 calls), and grows from there.",
+    "",
+    "Z X C V B  prev / play / pause / stop / next",
+    "← →  seek    ↑ ↓  volume",
+    "L  open talkgroup    S  hold    R  auto    J  filter",
+    "Alt+3  call info    Alt+G  equalizer    Alt+E  playlist",
+    "Ctrl+D  double size    Delete  remove    Ctrl+A  select all",
+  ]);
+}
+
+function chooseTalkgroup(t) {
+  closeDialog();
+  S.hold = t;
+  if (t) flash(`HOLD: ${t.name}`);
+  playKey("live");
+}
+
+function pickTalkgroup() {
+  const rows = new Map();
+  const add = (system, talkgroup, name) => {
+    const k = `${system}/${talkgroup}`;
+    if (!rows.has(k)) rows.set(k, { system, talkgroup, name: name || tgLabel(system, talkgroup) });
+  };
+  for (const c of rec.calls) add(c.systemName, c.talkgroup, c.alphaTag);
+  for (const s of [...(rec.config?.systems ?? []), ...(rec.config?.conventional ?? [])])
+    for (const t of rec.talkgroups(s.shortName).values()) add(s.shortName, t.talkgroup, t.alphaTag);
+  for (const e of rec.history) add(e.record.short_name ?? "", e.record.talkgroup, e.record.talkgroup_tag);
+  const all = [...rows.values()];
+
+  dialog("OPEN TALKGROUP", (d) => {
+    const input = Object.assign(document.createElement("input"), { className: "field", placeholder: "SEARCH NAME OR NUMBER", spellcheck: false });
+    const box = document.createElement("div");
+    box.className = "list pick";
+    const row = (text, dur, cls, onPick) => {
+      const el = document.createElement("div");
+      el.className = `row ${cls}`;
+      const t = Object.assign(document.createElement("span"), { className: "t", textContent: text });
+      const n = Object.assign(document.createElement("span"), { className: "d", textContent: dur });
+      el.append(t, n);
+      el.onclick = onPick;
+      return el;
+    };
+    const draw = () => {
+      const q = input.value.trim().toLowerCase();
+      const hits = all.filter((t) => !q || `${t.name} ${t.talkgroup} ${t.system}`.toLowerCase().includes(q)).slice(0, 400);
+      box.replaceChildren(
+        row("● ALL TALKGROUPS (SCAN)", "", "live", () => chooseTalkgroup(null)),
+        ...hits.map((t) => row(`${t.name}${t.system ? ` · ${t.system}` : ""}`, String(t.talkgroup), "", () => chooseTalkgroup(t))),
+      );
+    };
+    input.oninput = draw;
+    input.onkeydown = (e) => e.key === "Enter" && box.children[1]?.click();
+    draw();
+    d.append(input, box);
+    setTimeout(() => input.focus());
+  });
+}
+
+function optionsMenu(ev) {
+  const ph = rec.phase.phase;
+  const set = (k, v) => () => ((P[k] = v), save(), update());
+  menu(ev, [
+    { label: ph === "idle" ? "Start recording" : "Stop recording", disabled: !rec.connected || ph === "starting" || ph === "stopping", action: () => (ph === "idle" ? rec.start() : rec.stop()) },
+    "-",
+    { label: "Time elapsed", checked: P.timeMode === "elapsed", action: set("timeMode", "elapsed") },
+    { label: "Time remaining", checked: P.timeMode === "remaining", action: set("timeMode", "remaining") },
+    "-",
+    { label: "Emergencies first (live)", checked: P.emerg, action: set("emerg", !P.emerg) },
+    { label: "Visualizer: spectrum", checked: P.vis === 0, action: set("vis", 0) },
+    { label: "Visualizer: oscilloscope", checked: P.vis === 1, action: set("vis", 1) },
+    { label: "Visualizer: off", checked: P.vis === 2, action: set("vis", 2) },
+    "-",
+    { label: "Double size", checked: P.scale === 2, disabled: mobile, action: toggleDouble },
+    { label: "Reset window layout", action: () => ((P.win = structuredClone(DEF.win)), (P.plH = DEF.plH), layout(), save()) },
+    "-",
+    { label: "About Trunkamp", action: about },
+  ]);
+}
+
+// ── windows ──────────────────────────────────────────────────────────────────
+
+const WINS = ["main", "eq", "pl"];
+let scale = 2, mobile = false, zTop = 10;
+const height = (id) => (P.win[id].shade ? 14 : id === "pl" ? P.plH : 116);
+const rectOf = (id) => ({ x: P.win[id].x, y: P.win[id].y, w: 275, h: height(id) });
+
+function layout() {
+  mobile = innerWidth < 600;
+  scale = mobile ? innerWidth / 277 : P.scale;
+  desk.style.zoom = scale;
+  let y = 0, maxX = 0, maxY = 0;
+  for (const id of WINS) {
+    const w = P.win[id], el = $(id);
+    el.hidden = !w.open;
+    el.classList.toggle("shade", w.shade);
+    if (!w.open) continue;
+    let h = height(id), x = w.x, top = w.y;
+    if (mobile) {
+      // Stacked full width; the playlist takes the rest of the screen.
+      [x, top] = [1, y + 1];
+      if (id === "pl" && !w.shade) h = Math.max(h, Math.floor(innerHeight / scale) - top - 2);
+      y = top + h;
+    }
+    Object.assign(el.style, { left: `${x}px`, top: `${top}px`, height: `${h}px` });
+    maxX = Math.max(maxX, x + 276);
+    maxY = Math.max(maxY, top + h + 1);
+  }
+  desk.style.width = `${maxX}px`;
+  desk.style.height = `${maxY}px`;
+  update();
+}
+addEventListener("resize", layout);
+
+function focusWin(el) {
+  for (const w of document.querySelectorAll(".win")) w.classList.toggle("active", w === el);
+  el.style.zIndex = ++zTop;
+}
+
+/** Drag `handle` to move something: get() its position, set(x, y) the new one (desk pixels). */
+function dragBy(handle, get, set) {
+  handle.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0 || e.target.closest(".tb")) return;
+    const [ox, oy] = get(), sx = e.clientX, sy = e.clientY;
+    handle.setPointerCapture(e.pointerId);
+    const move = (ev) => set(ox + (ev.clientX - sx) / scale, oy + (ev.clientY - sy) / scale);
+    const up = () => (handle.removeEventListener("pointermove", move), handle.removeEventListener("pointerup", up));
+    handle.addEventListener("pointermove", move);
+    handle.addEventListener("pointerup", up);
+  });
+}
+
+const overlap = (a1, a2, b1, b2) => a1 < b2 && b1 < a2;
+function touching(a, b) {
+  return ((Math.abs(a.y + a.h - b.y) <= 1 || Math.abs(b.y + b.h - a.y) <= 1) && overlap(a.x, a.x + a.w, b.x, b.x + b.w)) ||
+         ((Math.abs(a.x + a.w - b.x) <= 1 || Math.abs(b.x + b.w - a.x) <= 1) && overlap(a.y, a.y + a.h, b.y, b.y + b.h));
+}
+/** The windows docked to `id`, through each other, `id` first. */
+function docked(id) {
+  const out = [id];
+  for (let i = 0; i < out.length; i++)
+    for (const o of WINS) if (!out.includes(o) && P.win[o].open && touching(rectOf(out[i]), rectOf(o))) out.push(o);
+  return out;
+}
+/** Snap a window at (x, y) to the other windows' edges and the screen's, within 10 px. */
+function snap(id, group, x, y) {
+  const h = height(id), SN = 10;
+  const vw = document.documentElement.clientWidth / scale, vh = document.documentElement.clientHeight / scale;
+  const xs = [0, vw - 275], ys = [0, vh - h];
+  for (const o of WINS) {
+    if (group.includes(o) || !P.win[o].open) continue;
+    const r = rectOf(o);
+    if (overlap(y - SN, y + h + SN, r.y, r.y + r.h)) xs.push(r.x + r.w, r.x - 275, r.x);
+    if (overlap(x - SN, x + 275 + SN, r.x, r.x + r.w)) ys.push(r.y + r.h, r.y - h, r.y, r.y + r.h - h);
+  }
+  const near = (v, cands) => cands.reduce((best, c) => (Math.abs(c - v) < Math.abs(best - v) ? c : best), Infinity);
+  const bx = near(x, xs), by = near(y, ys);
+  return [Math.abs(bx - x) <= SN ? bx : x, Math.abs(by - y) <= SN ? by : y];
+}
+
+for (const id of WINS) {
+  const el = $(id), title = el.querySelector(".title");
+  el.addEventListener("pointerdown", () => focusWin(el), true);
+  title.addEventListener("dblclick", (e) => !e.target.closest(".tb") && toggleShade(id));
+  el.querySelector('[data-act="shade"]').onclick = () => toggleShade(id);
+  el.querySelector('[data-act="close"]').onclick = () => (id === "main" ? stop() : toggleWin(id));
+  // The main window takes the windows docked to it along.
+  let group = [], start = [];
+  title.addEventListener("pointerdown", (e) => {
+    if (mobile || e.target.closest(".tb")) return;
+    group = id === "main" ? docked(id) : [id];
+    start = group.map((g) => [P.win[g].x, P.win[g].y]);
+  });
+  dragBy(title, () => [P.win[id].x, P.win[id].y], (x, y) => {
+    if (mobile) return;
+    const [sx, sy] = snap(id, group, x, y);
+    group.forEach((g, i) => {
+      P.win[g].x = Math.round(start[i][0] + sx - start[0][0]);
+      P.win[g].y = Math.round(start[i][1] + sy - start[0][1]);
+    });
+    layout();
+    save();
+  });
+}
+focusWin($("main"));
+
+function toggleShade(id) {
+  P.win[id].shade = !P.win[id].shade;
+  layout();
+  save();
+}
+function toggleWin(id) {
+  P.win[id].open = !P.win[id].open;
+  layout();
+  save();
+}
+function toggleDouble() {
+  P.scale = P.scale === 2 ? 1 : 2;
+  layout();
+  save();
+}
+
+// The playlist's height, in Winamp's 29 px steps.
+dragBy($("grip"), () => [0, P.plH], (_, h) => {
+  const next = Math.max(116, 116 + Math.round((h - 116) / 29) * 29);
+  if (next !== P.plH) {
+    P.plH = next;
+    layout();
+    save();
+  }
+});
+
+// ── sliders ──────────────────────────────────────────────────────────────────
+
+function slider(el, o) {
+  el.append(Object.assign(document.createElement("i"), { className: "thumb" }));
+  const s = {
+    value: 0, dragging: false,
+    set(f) {
+      s.value = Math.min(1, Math.max(0, f));
+      el.style.setProperty("--p", s.value);
+      if (o.paint) el.style.setProperty("--track", o.paint(s.value));
+    },
+  };
+  const at = (e) => {
+    const r = el.getBoundingClientRect();
+    return o.vertical ? 1 - (e.clientY - r.top) / r.height : (e.clientX - r.left) / r.width;
+  };
+  el.addEventListener("pointerdown", (e) => {
+    if (e.button !== 0 || el.classList.contains("off")) return;
+    el.setPointerCapture(e.pointerId);
+    s.dragging = true;
+    s.set(at(e));
+    o.onInput?.(s.value);
+  });
+  el.addEventListener("pointermove", (e) => s.dragging && (s.set(at(e)), o.onInput?.(s.value)));
+  const end = () => s.dragging && ((s.dragging = false), o.onEnd?.(s.value));
+  el.addEventListener("pointerup", end);
+  el.addEventListener("pointercancel", end);
+  if (o.reset) el.addEventListener("dblclick", () => (s.set(o.reset), o.onInput?.(s.value), o.onEnd?.(s.value)));
+  s.set(o.value ?? 0);
+  return s;
+}
+
+const vol = slider($("vol"), {
+  value: P.vol / 100,
+  paint: (f) => `hsl(${120 - 120 * f} 65% ${16 + 14 * f}%)`,
+  onInput: (f) => {
+    P.vol = Math.round(f * 100);
+    engine.applyVol();
+    flash(`VOLUME: ${P.vol}%`);
+    save();
+  },
+});
+slider($("bal"), {
+  value: (P.bal + 100) / 200, reset: 0.5,
+  paint: (f) => `hsl(${120 - 240 * Math.abs(f - 0.5)} 65% 20%)`,
+  onInput: (f) => {
+    let b = Math.round(f * 200 - 100);
+    if (Math.abs(b) < 8) b = 0;
+    P.bal = b;
+    engine.applyVol();
+    flash(b ? `BALANCE: ${Math.abs(b)}% ${b < 0 ? "LEFT" : "RIGHT"}` : "BALANCE: CENTER");
+    save();
+  },
+});
+const fileDur = () => (isFinite(audio.duration) ? audio.duration : S.entry?.record.call_length || 0);
+const seek = slider($("seek"), {
+  onInput: (f) => flash(`SEEK TO: ${duration(f * fileDur())}/${duration(fileDur())}`),
+  onEnd: (f) => S.entry && (audio.currentTime = f * fileDur()),
+});
+
+// ── equalizer ────────────────────────────────────────────────────────────────
+
+const eqWin = $("eq");
+const PRESETS = {
+  Flat: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  "Voice clarity": [-6, -4, -2, 0, 1, 3, 4, 3, 1, -1],
+  "Cut hum and rumble": [-12, -9, -4, 0, 0, 0, 0, 0, 0, 0],
+  "Tame harsh digital": [0, 0, 0, 0, 0, -1, -3, -5, -6, -6],
+  "Loud and clear": [-4, -2, 0, 1, 2, 3, 3, 2, 0, -2],
+  Telephone: [-12, -10, -4, 2, 4, 4, 2, -4, -8, -12],
+};
+const eqSliders = [];
+function eqSlider(x, label, get, put) {
+  const el = Object.assign(document.createElement("div"), { className: "sl v" });
+  Object.assign(el.style, { left: `${x}px`, top: "38px", width: "14px", height: "63px" });
+  el.style.cssText += ";--tw:11px;--th:11px";
+  const lab = pix(label, "#9a9ab4");
+  lab.className = "abs";
+  Object.assign(lab.style, { left: `${x + 7 - Math.floor(lab.width / 2)}px`, top: "104px" });
+  eqWin.append(el, lab);
+  const s = slider(el, {
+    value: (get() + 12) / 24, reset: 0.5,
+    paint: (f) => `hsl(${120 - 240 * Math.abs(f - 0.5)} 70% 32%)`,
+    onInput: (f) => {
+      let db = Math.round((f * 24 - 12) * 2) / 2;
+      if (Math.abs(db) < 0.75) db = 0;
+      put(db);
+      engine.applyEq();
+      drawEq();
+      flash(`${label === "PRE" ? "PREAMP" : `EQ ${label} HZ`}: ${db > 0 ? "+" : ""}${db} DB`);
+      save();
+    },
+  });
+  s.sync = () => s.set((get() + 12) / 24);
+  eqSliders.push(s);
+}
+eqSlider(21, "PRE", () => P.pre, (v) => (P.pre = v));
+["70", "150", "300", "500", "800", "1.2K", "1.6K", "2.2K", "3K", "3.6K"].forEach((l, i) =>
+  eqSlider(78 + i * 18, l, () => P.bands[i], (v) => (P.bands[i] = v)));
+for (const [t, y] of [["+12", 38], ["0", 66], ["-12", 95]]) {
+  const c = pix(t, "#7a7a94");
+  c.className = "abs";
+  Object.assign(c.style, { left: `${71 - c.width}px`, top: `${y}px` });
+  eqWin.append(c);
+}
+
+const eqCtx = $("eq-graph").getContext("2d");
+function drawEq() {
+  const c = eqCtx;
+  c.fillStyle = "#000";
+  c.fillRect(0, 0, 113, 19);
+  c.fillStyle = "#3a3a4a";
+  c.fillRect(0, Math.round(9 - (P.pre / 12) * 8), 113, 1);
+  const pts = P.bands.map((v, i) => [3 + (i * 106) / 9, 9 - (v / 12) * 8]);
+  for (let x = 0; x < 113; x++) {
+    let i = pts.findIndex((p, k) => k === pts.length - 1 || pts[k + 1][0] >= x);
+    i = Math.min(i, pts.length - 2);
+    const [x0, y0] = pts[i], [x1, y1] = pts[i + 1];
+    const t = Math.min(1, Math.max(0, (x - x0) / (x1 - x0)));
+    const y = y0 + (y1 - y0) * (1 - Math.cos(t * Math.PI)) / 2;
+    c.fillStyle = P.eqOn ? `hsl(${120 - (Math.abs(9 - y) / 8) * 120} 100% 50%)` : "#2a4a2a";
+    c.fillRect(x, Math.round(y), 1, 1);
+  }
+}
+$("eq-on").onclick = () => {
+  P.eqOn = !P.eqOn;
+  engine.applyEq();
+  drawEq();
+  save();
+  update();
+};
+$("eq-presets").onclick = (ev) =>
+  menu(ev, Object.entries(PRESETS).map(([label, v]) => ({
+    label,
+    action: () => {
+      P.bands = [...v];
+      P.pre = 0;
+      eqSliders.forEach((s) => s.sync());
+      engine.applyEq();
+      drawEq();
+      save();
+    },
+  })));
+drawEq();
+
+// ── main window displays ─────────────────────────────────────────────────────
+
+const lcdCtx = $("lcd").getContext("2d"), mqCtx = $("marquee").getContext("2d"), infoCtx = $("info").getContext("2d"), clCtx = $("clutter").getContext("2d");
+const VISC = Array.from({ length: 16 }, (_, r) => `hsl(${120 - r * 8} 100% 45%)`); // bottom row green → top red
+const peaks = new Float32Array(19);
+let freq = null, wave = null, statusAt = 0;
+rec.on("status", () => (statusAt = performance.now()));
+
+/** What the time display shows: { s, neg } or null. */
+function curTime() {
+  if (!S.playing || S.waiting) return null;
+  if (S.src === "live") {
+    const cv = liveCall();
+    if (!cv || !rec.status) return null;
+    return { s: Math.max(0, rec.status.nowS + (performance.now() - statusAt) / 1000 - cv.startS), neg: false };
+  }
+  const cur = audio.currentTime || 0, dur = fileDur();
+  return P.timeMode === "remaining" && dur ? { s: Math.max(0, dur - cur), neg: true } : { s: cur, neg: false };
+}
+
+function drawLcd(t) {
+  const c = lcdCtx;
+  c.fillStyle = "#000";
+  c.fillRect(0, 0, 76, 40);
+  // Play state, and the connection's light under it.
+  c.fillStyle = LCD;
+  if (!S.playing) c.fillRect(1, 4, 6, 6);
+  else if (S.paused) c.fillRect(1, 4, 2, 7), c.fillRect(4, 4, 2, 7);
+  else [1, 2, 3, 4, 3, 2, 1].forEach((w, i) => c.fillRect(2, 4 + i, w, 1));
+  c.fillStyle = rec.connected ? LCD : (t / 400) % 2 < 1 ? RED : "#300";
+  c.fillRect(2, 13, 3, 2);
+  // Time.
+  const tm = curTime();
+  const show = tm && !(S.paused && (t / 500) % 2 < 1);
+  const s = tm ? Math.floor(tm.s) : 0, m = Math.min(99, Math.floor(s / 60)), ss = s % 60;
+  if (show && tm.neg) c.fillStyle = LCD, c.fillRect(12, 8, 5, 2);
+  digit(c, 20, 3, show ? Math.floor(m / 10) : null);
+  digit(c, 31, 3, show ? m % 10 : null);
+  c.fillStyle = show ? LCD : "#061d06";
+  c.fillRect(42, 6, 2, 2);
+  c.fillRect(42, 11, 2, 2);
+  digit(c, 47, 3, show ? Math.floor(ss / 10) : null);
+  digit(c, 58, 3, show ? ss % 10 : null);
+  drawVis(c);
+}
+
+function drawVis(c) {
+  const an = engine.an;
+  if (P.vis === 2 || !an) return;
+  if (P.vis === 0) {
+    freq ??= new Uint8Array(an.frequencyBinCount);
+    an.getByteFrequencyData(freq);
+    const hz = engine.ctx.sampleRate / an.fftSize;
+    for (let i = 0; i < 19; i++) {
+      // 19 bars, log-spaced over 100 Hz – 3.8 kHz.
+      const lo = Math.floor((100 * 38 ** (i / 19)) / hz), hi = Math.max(lo + 1, Math.floor((100 * 38 ** ((i + 1) / 19)) / hz));
+      let v = 0;
+      for (let k = lo; k < hi; k++) v = Math.max(v, freq[k]);
+      const h = Math.round((v / 255) * 16);
+      for (let r = 0; r < h; r++) (c.fillStyle = VISC[r]), c.fillRect(i * 4, 38 - r, 3, 1);
+      peaks[i] = Math.max(h, peaks[i] - 0.3);
+      if (peaks[i] >= 1) (c.fillStyle = "#a0a0b8"), c.fillRect(i * 4, 38 - Math.round(peaks[i]), 3, 1);
+    }
+  } else {
+    wave ??= new Uint8Array(an.fftSize);
+    an.getByteTimeDomainData(wave);
+    for (let x = 0; x < 76; x++) {
+      const v = wave[Math.floor((x * wave.length) / 76)];
+      const y = Math.max(0, Math.min(15, Math.round(7.5 + ((v - 128) / 128) * 24)));
+      c.fillStyle = VISC[Math.min(15, Math.abs(y - 7) * 2)];
+      c.fillRect(x, 23 + y, 1, 1);
+    }
+  }
+}
+
+let mqText = "", mqSince = 0;
+function drawMarquee(t) {
+  const fl = S.flash && t < S.flash.until ? S.flash.text : null;
+  const text = fl ?? S.mq;
+  if (text !== mqText) (mqText = text), (mqSince = t);
+  const c = mqCtx, color = fl ? LCD : S.mqColor;
+  c.fillStyle = "#000";
+  c.fillRect(0, 0, 152, 9);
+  if (fl || textWidth(text) <= 152) return drawText(c, text, 0, 2, color);
+  const loop = `${text}  ***  `, w = fold(loop).length * 4;
+  const off = Math.floor((Math.max(0, t - mqSince - 1000) / 1000) * 24) % w;
+  drawText(c, loop, -off, 2, color);
+  drawText(c, loop, w - off, 2, color);
+}
+
+function drawInfo() {
+  const c = infoCtx;
+  const sound = S.playing && !S.waiting && (S.src !== "live" || engine.live.nowPlaying);
+  c.fillStyle = "#000";
+  c.fillRect(0, 0, 152, 7);
+  if (sound) drawText(c, "128", 0, 1, LCD), drawText(c, "8", 44, 1, LCD);
+  drawText(c, "KBPS", 14, 1, GREY);
+  drawText(c, "KHZ", 50, 1, GREY);
+  drawText(c, "MONO", 112, 1, sound ? LCD : DIM);
+  drawText(c, "LIVE", 134, 1, S.playing && S.src === "live" ? LCD : DIM);
+}
+
+function drawClutter() {
+  const c = clCtx;
+  c.fillStyle = "#1a1a26";
+  c.fillRect(0, 0, 8, 43);
+  [..."OAIDV"].forEach((ch, i) => drawText(c, ch, 2, 3 + i * 8, ch === "D" && P.scale === 2 ? "#e8e8f8" : "#8a8aa6"));
+}
+$("clutter").addEventListener("click", (e) => {
+  const r = e.currentTarget.getBoundingClientRect();
+  const i = Math.min(4, Math.floor(((e.clientY - r.top) / r.height) * 5));
+  const pos = { clientX: e.clientX, clientY: e.clientY, type: "contextmenu" };
+  [() => optionsMenu(pos), about, () => info(), toggleDouble, () => ((P.vis = (P.vis + 1) % 3), save())][i]();
+});
+$("lcd").addEventListener("click", (e) => {
+  const r = e.currentTarget.getBoundingClientRect();
+  if ((e.clientY - r.top) / r.height < 0.5) P.timeMode = P.timeMode === "elapsed" ? "remaining" : "elapsed";
+  else P.vis = (P.vis + 1) % 3;
+  save();
+});
+
+/** The marquee's text, and its colour. */
+function marquee() {
+  if (!rec.connected) return [rec.exited ? "RECORDER EXITED - WAITING FOR IT TO COME BACK" : "CONNECTING TO RECORDER...", LCD];
+  if (S.playing && S.src === "live") {
+    const np = engine.live.nowPlaying;
+    if (np) {
+      const cv = liveCall();
+      const sys = cv?.systemName || sysName(np.system);
+      const unit = cv?.sources?.at(-1);
+      const flags = [cv?.emergency && "EMERGENCY", cv?.encrypted && (cv.decrypted ? "DECRYPTED" : "ENCRYPTED")].filter(Boolean);
+      return [`LIVE: ${cv?.alphaTag || tgLabel(sys, np.talkgroup)} (${np.talkgroup}) - ${sys}${unit != null ? ` - ${rec.unitName(sys, unit) || `UNIT ${unit}`}` : ""}${flags.map((f) => ` [${f}]`).join("")}`, cv?.emergency ? RED : LCD];
+    }
+    if (rec.phase.phase !== "running") return [`LIVE - THE RECORDER IS ${rec.phase.phase.toUpperCase()} - START IT FROM THE OPTIONS MENU (O)`, LCD];
+    return [S.hold ? `LIVE - HOLD ON ${S.hold.name} - WAITING FOR TRAFFIC` : "LIVE - SCANNING ALL TALKGROUPS", LCD];
+  }
+  if (S.waiting) return ["AUTO - WAITING FOR THE NEXT RECORDING", LCD];
+  if (S.playing && S.entry) {
+    const r = S.entry.record, n = visible.indexOf(S.entry) + 1;
+    const flags = [r.emergency && "EMERGENCY", r.encrypted && (r.decrypted ? "DECRYPTED" : "ENCRYPTED")].filter(Boolean);
+    return [`${n ? `${n}. ` : ""}${clock(r.start_time)} ${callName(r)} (${r.talkgroup}) - ${r.short_name ?? ""} (${duration(r.call_length)})${flags.map((f) => ` [${f}]`).join("")}`, r.emergency ? RED : LCD];
+  }
+  const ph = rec.phase.phase, n = rec.status?.systems?.length ?? 0;
+  const what = ph === "running" ? `RECORDING${n ? ` ${n} SYSTEM${n > 1 ? "S" : ""}` : ""}` : ph === "idle" ? "RECORDER IDLE" : ph.toUpperCase();
+  return [`TRUNKAMP - TRUNK RECORDER PRO ${rec.version ?? ""} - ${what}${rec.phase.error ? ` - ${rec.phase.error}` : ""}`, LCD];
+}
+
+/** Redraw what isn't animated: called on every change. */
+function update() {
+  [S.mq, S.mqColor] = marquee();
+  $("b-hold").classList.toggle("on", !!S.hold);
+  $("b-auto").classList.toggle("on", P.auto);
+  $("b-eq").classList.toggle("on", P.win.eq.open);
+  $("b-pl").classList.toggle("on", P.win.pl.open);
+  $("eq-on").classList.toggle("on", P.eqOn);
+  drawClutter();
+  paintRows();
+  // Emergencies first: jump to an emergency call on the air.
+  if (P.emerg && S.playing && S.src === "live" && !S.paused) {
+    const np = engine.live.nowPlaying;
+    const playingEm = np && liveCall()?.emergency;
+    const em = !playingEm && rec.calls.find((c) => c.emergency && (!S.hold || c.talkgroup === S.hold.talkgroup));
+    if (em) engine.live.prefer = `${em.system}:${em.id}`;
+  }
+}
+
+let lastFrame = 0;
+function frame(t) {
+  requestAnimationFrame(frame);
+  if (t - lastFrame < 33) return;
+  lastFrame = t;
+  drawLcd(t);
+  drawMarquee(t);
+  drawInfo();
+  const d = S.playing && S.entry ? fileDur() : 0;
+  $("seek").classList.toggle("off", !d);
+  if (d && !seek.dragging) seek.set(audio.currentTime / d);
+  if (P.win.main.shade) {
+    const tm = curTime();
+    setTitle("main", `${tm ? `${tm.neg ? "-" : ""}${duration(tm.s)} ` : ""}${(S.flash && t < S.flash.until ? S.flash.text : S.mq).slice(0, 52)}`);
+  } else setTitle("main", "TRUNKAMP");
+}
+requestAnimationFrame(frame);
+
+// ── buttons and keys ─────────────────────────────────────────────────────────
+
+$("b-prev").onclick = prev;
+$("b-play").onclick = play;
+$("b-pause").onclick = pause;
+$("b-stop").onclick = stop;
+$("b-next").onclick = next;
+$("b-eject").onclick = pickTalkgroup;
+$("b-hold").onclick = toggleHold;
+$("b-auto").onclick = toggleAuto;
+$("b-eq").onclick = () => toggleWin("eq");
+$("b-pl").onclick = () => toggleWin("pl");
+$("pl-add").onclick = pickTalkgroup;
+$("pl-rem").onclick = (ev) => menu(ev, [
+  { label: "Remove selected", disabled: !sel.size, action: removeSelected },
+  { label: "Restore removed", disabled: !removed.size, action: () => (removed.clear(), refilter()) },
+]);
+$("pl-sel").onclick = (ev) => menu(ev, [
+  { label: "Select all", action: selectAll },
+  { label: "Select none", action: () => (sel.clear(), paintRows()) },
+  { label: "Invert selection", action: () => (visible.forEach((it) => (sel.has(it.path) ? sel.delete(it.path) : sel.add(it.path))), paintRows()) },
+]);
+$("pl-misc").onclick = (ev) => menu(ev, [
+  { label: "Call info", action: () => info(sel.size ? [...sel][0] : undefined) },
+  { label: "Jump to playing", disabled: !S.src, action: () => rowEls.get(S.src)?.scrollIntoView({ block: "center" }) },
+  { label: "Clear filter", disabled: !filterEl.value, action: () => ((filterEl.value = ""), refilter()) },
+]);
+
+document.addEventListener("keydown", (e) => {
+  if (e.target.matches("input")) return e.key === "Escape" && e.target.blur();
+  const k = e.key.toLowerCase();
+  if (e.key === "Escape") closeMenu(), closeDialog();
+  else if (e.altKey && k === "g") toggleWin("eq");
+  else if (e.altKey && k === "e") toggleWin("pl");
+  else if (e.altKey && k === "3") info();
+  else if ((e.ctrlKey || e.metaKey) && k === "d") toggleDouble();
+  else if ((e.ctrlKey || e.metaKey) && k === "a") selectAll();
+  else if (e.ctrlKey || e.metaKey || e.altKey) return;
+  else if (k === "z") prev();
+  else if (k === "x") play();
+  else if (k === "c") pause();
+  else if (k === "v") stop();
+  else if (k === "b") next();
+  else if (k === "l") pickTalkgroup();
+  else if (k === "s") toggleHold();
+  else if (k === "r") toggleAuto();
+  else if (k === "j") filterEl.focus();
+  else if (e.key === "ArrowUp" || e.key === "ArrowDown") {
+    P.vol = Math.max(0, Math.min(100, P.vol + (e.key === "ArrowUp" ? 2 : -2)));
+    vol.set(P.vol / 100);
+    engine.applyVol();
+    flash(`VOLUME: ${P.vol}%`);
+    save();
+  } else if (e.key === "ArrowLeft") seekBy(-5);
+  else if (e.key === "ArrowRight") seekBy(5);
+  else if (e.key === "Enter" && sel.size) playKey([...sel][0]);
+  else if (e.key === "Delete") removeSelected();
+  else return;
+  e.preventDefault();
+});
+
+// ── recorder ─────────────────────────────────────────────────────────────────
+
+rec.on("hello", rebuild);
+rec.on("config", rebuild);
+rec.on("callFiles", (m) => {
+  audioKept.set(m.path, m.audio);
+  rebuild();
+});
+rec.on("concluded", (m) => {
+  rebuild();
+  const e = byPath.get(m.entry.path);
+  if (S.waiting && S.playing && P.auto && e && playable(e) && visible.includes(e)) playKey(e.path);
+});
+rec.on("error", (m) => flash(`ERROR: ${m.message}`, 6000));
+rec.on("notice", (m) => flash(m.message, 4000));
+rec.on("change", update);
+
+layout();
+rebuild();
+</script>
 </body>
 </html>
