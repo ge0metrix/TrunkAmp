@@ -153,7 +153,7 @@
 const params = new URLSearchParams(location.search);
 const server = params.get("server");
 const base = server ? `${location.protocol === "https:" ? "https" : "http"}://${server}` : "";
-const { TrunkClient, conventionalIndex, duration, mhz } = await import(`${base}/api/client.js`);
+const { TrunkClient, systemName, duration, mhz } = await import(`${base}/api/client.js`);
 const rec = new TrunkClient({ server: server ?? undefined, historyLimit: 1000 });
 
 const $ = (id) => document.getElementById(id);
@@ -369,11 +369,8 @@ const engine = {
 
 // ── names ────────────────────────────────────────────────────────────────────
 
-function sysName(num) {
-  const k = conventionalIndex(num);
-  if (k !== null) return rec.config?.conventional?.[k]?.shortName ?? "";
-  return rec.status?.systems?.find((s) => s.index === num)?.shortName ?? "";
-}
+// A system's short name by the number calls and live audio carry (trunked and conventional alike).
+const sysName = (num) => systemName(rec.status, num);
 const tgLabel = (sys, tg) => (sys && rec.talkgroups(sys).get(tg)?.alphaTag) || `TG ${tg}`;
 const callName = (r) => r.talkgroup_tag || tgLabel(r.short_name, r.talkgroup);
 const clock = (t) => new Date(t * 1000).toLocaleTimeString([], { hourCycle: "h23" });
